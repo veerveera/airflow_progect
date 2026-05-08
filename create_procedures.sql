@@ -93,7 +93,7 @@ BEGIN
 	SELECT v_FromDate, v_ToDate, acc_s.chapter,
 	LEFT(acc.account_number, 5) AS ledger_account,
 	acc.char_type AS characteristic,
-	SUM(CASE WHEN acc.currency_code IN ('810', '643') THEN bal_from.balance_out_rub ELSE 0 END) AS balance_in_rub,
+	/*SUM(CASE WHEN acc.currency_code IN ('810', '643') THEN bal_from.balance_out_rub ELSE 0 END) AS balance_in_rub,
 	SUM(CASE WHEN acc.currency_code NOT IN ('810', '643') THEN bal_from.balance_out_rub ELSE 0 END) AS balance_in_val,
 	SUM(COALESCE(bal_from.balance_out_rub, 0)) AS balance_in_total,
 	
@@ -107,7 +107,24 @@ BEGIN
 	
 	SUM(CASE WHEN acc.currency_code IN ('810', '643') THEN bal_last.balance_out_rub ELSE 0 END) AS balance_out_rub,
 	SUM(CASE WHEN acc.currency_code NOT IN ('810', '643') THEN bal_last.balance_out_rub ELSE 0 END) AS balance_out_val,
-	SUM(COALESCE(bal_last.balance_out_rub, 0)) AS balance_out_total
+	SUM(COALESCE(bal_last.balance_out_rub, 0)) AS balance_out_total*/
+	-- в видео не изменненный вариант, в таблице встречаются null, исправила так, чтобы в таблицу записывались 0
+
+	COALESCE(SUM(CASE WHEN acc.currency_code IN ('810', '643') THEN bal_from.balance_out_rub ELSE 0 END), 0) AS balance_in_rub,
+	COALESCE(SUM(CASE WHEN acc.currency_code NOT IN ('810', '643') THEN bal_from.balance_out_rub ELSE 0 END), 0) AS balance_in_val,
+	COALESCE(SUM(bal_from.balance_out_rub), 0) AS balance_in_total,
+	
+	COALESCE(SUM(CASE WHEN acc.currency_code IN ('810', '643') THEN turn.debet_amount_rub ELSE 0 END), 0) AS turn_deb_rub,
+	COALESCE(SUM(CASE WHEN acc.currency_code NOT IN ('810', '643') THEN turn.debet_amount_rub ELSE 0 END), 0) AS turn_deb_val,
+	COALESCE(SUM(turn.debet_amount_rub), 0) AS turn_deb_total,
+	
+	COALESCE(SUM(CASE WHEN acc.currency_code IN ('810', '643') THEN turn.credit_amount_rub ELSE 0 END), 0) AS turn_cre_rub,
+	COALESCE(SUM(CASE WHEN acc.currency_code NOT IN ('810', '643') THEN turn.credit_amount_rub ELSE 0 END), 0) AS turn_cre_val,
+	COALESCE(SUM(turn.credit_amount_rub), 0) AS turn_cre_total,
+	
+	COALESCE(SUM(CASE WHEN acc.currency_code IN ('810', '643') THEN bal_last.balance_out_rub ELSE 0 END), 0) AS balance_out_rub,
+	COALESCE(SUM(CASE WHEN acc.currency_code NOT IN ('810', '643') THEN bal_last.balance_out_rub ELSE 0 END), 0) AS balance_out_val,
+	COALESCE(SUM(bal_last.balance_out_rub), 0) AS balance_out_total
 	
 	FROM ds.md_account_d acc
 	
