@@ -16,39 +16,56 @@ FILES_TO_LOAD = {
     'rd.product': os.path.join(CSV_FOLDER, 'product_info.csv')
 }
 
+def log_start(proc_name, message, hook):
 
-def run_log(proc_name, calc_date, hook):
     start_ts = datetime.now()
-    log_id = hook.get_first(
-        f"INSERT INTO {SCHEMA_LOGS}.etl_log (dag_id, start_ts, status, message) "
-        f"VALUES (%s, %s, %s, %s) RETURNING id;",
-        parameters=(proc_name, start_ts, 'Running', f'Расчет за дату {calc_date}')
-    )[0]
+    log_id = hook.get_first( f"INSERT INTO {SCHEMA_LOGS}.etl_log (dag_id, start_ts, status, message) VALUES (%s, %s, %s, %s) RETURNING id;", parameters=(proc_name, start_ts, 'Running', message))[0]
+
+    return log_id
+
+
+def log_end(log_id, status, error_message, hook):
+
+    end_ts = datetime.now()
+    if status == 'Success':
+        sql = f"UPDATE {SCHEMA_LOGS}.etl_log SET end_ts = %s, status = %s WHERE id = %s"
+        hook.run(sql, parameters=(end_ts, 'Success', log_id))
+    else:
+        sql = f"UPDATE {SCHEMA_LOGS}.etl_log SET end_ts = %s, status = %s, message = %s WHERE id = %s"
+        hook.run(sql, parameters=(end_ts, 'Error', str(error_message)[:200], log_id))
+
+
+
+def truncate_product_table(**kwargs):
+    hook = PostgresHook(postgres_conn_id=CONNECTION_ID)
+    calc_date = kwargs.get('ds')
+
+    log_id = log_start('Truncate_product', f'Очистка rd.product за дату {calc_date}', hook)
 
     try:
-        if proc_name == 'fill_loan_holiday_info':
-            hook.run(f"CALL dm.{proc_name}();")
-        else:
-            hook.run(f"CALL dm.{proc_name}(%s);", parameters=(calc_date,))
+        logging.info("Полная очистка таблицы справочника продуктов: rd.product")
+        with hook.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("TRUNCATE TABLE rd.product RESTART IDENTITY CASCADE;")
 
-        hook.run(
-            f"UPDATE {SCHEMA_LOGS}.etl_log SET end_ts = %s, status = %s WHERE id = %s",
-            parameters=(datetime.now(), 'Success', log_id)
-        )
-
+        log_end(log_id, 'Success', None, hook)
     except Exception as e:
-        hook.run(
-            f"UPDATE {SCHEMA_LOGS}.etl_log SET end_ts = %s, status = %s, message = %s WHERE id = %s",
-            parameters=(datetime.now(), 'Error', str(e)[:200], log_id)
-        )
+        log_end(log_id, 'Error', e, hook)
         raise e
 
 
-def load_sources_from_csv(**kwargs):
+def load_table_from_csv(table_name, **kwargs):
     hook = PostgresHook(postgres_conn_id=CONNECTION_ID)
-    engine = hook.get_sqlalchemy_engine()
+    calc_date = kwargs.get('ds')
 
-    for table_name, file_path in FILES_TO_LOAD.items():
+    proc_name = 'Fill_deal_info' if table_name == 'rd.deal_info' else 'Fill_product_info'
+
+    log_id = log_start(proc_name, f'Загрузка {table_name} из CSV за дату {calc_date}', hook)
+
+    try:
+        engine = hook.get_sqlalchemy_engine()
+        file_path = FILES_TO_LOAD[table_name]
+
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"Файл не найден по пути: {file_path}")
 
@@ -57,7 +74,7 @@ def load_sources_from_csv(**kwargs):
             try:
                 df = pd.read_csv(file_path, sep=None, engine='python', encoding=enc)
                 break
-            except Exception as e:
+            except Exception:
                 continue
 
         if df is None:
@@ -68,10 +85,7 @@ def load_sources_from_csv(**kwargs):
         else:
             schema, table = 'public', table_name
 
-        logging.info(f"Очистка таблицы детального слоя: {table_name}")
-        hook.run(f"TRUNCATE TABLE {table_name} RESTART IDENTITY;")
-
-        logging.info(f"Импорт свежих данных из файла {file_path}")
+        logging.info(f"Импорт данных из файла {file_path} в {table_name} (режим: append)")
 
         df.to_sql(
             name=table,
@@ -79,15 +93,34 @@ def load_sources_from_csv(**kwargs):
             schema=schema,
             if_exists='append',
             index=False,
-            chunksize=10000,
+            chunksize=5000,
             method='multi'
         )
 
+        log_end(log_id, 'Success', None, hook)
 
-def calculate_target_datamart(**kwargs):
+    except Exception as e:
+        log_end(log_id, 'Error', e, hook)
+        raise e
+
+
+def fill_loan_holiday_info(**kwargs):
     hook = PostgresHook(postgres_conn_id=CONNECTION_ID)
     calc_date = kwargs.get('ds')
-    run_log(proc_name='fill_loan_holiday_info', calc_date=calc_date, hook=hook)
+    proc_name = 'fill_loan_holiday_info'
+
+    log_id = log_start(proc_name, f'Расчет витрины за дату {calc_date}', hook)
+
+    try:
+
+        hook.run(f"CALL dm.{proc_name}();")
+
+        log_end(log_id, 'Success', None, hook)
+
+    except Exception as e:
+        log_end(log_id, 'Error', e, hook)
+        raise e
+
 
 
 with DAG(
@@ -99,16 +132,30 @@ with DAG(
 ) as dag:
     start = EmptyOperator(task_id='start')
 
-    load_csv = PythonOperator(
-        task_id='load_csv_sources',
-        python_callable=load_sources_from_csv
+    truncate_product = PythonOperator(
+        task_id='Truncate_product',
+        python_callable=truncate_product_table
+    )
+
+    fill_deal = PythonOperator(
+        task_id='Fill_deal_info',
+        python_callable=load_table_from_csv,
+        op_kwargs={'table_name': 'rd.deal_info'}
+    )
+
+    fill_product = PythonOperator(
+        task_id='Fill_product_info',
+        python_callable=load_table_from_csv,
+        op_kwargs={'table_name': 'rd.product'}
     )
 
     rebuild_dm = PythonOperator(
         task_id='rebuild_dm_loan_holiday_info',
-        python_callable=calculate_target_datamart
+        python_callable=fill_loan_holiday_info
     )
 
     end = EmptyOperator(task_id='end')
 
-    start >> load_csv >> rebuild_dm >> end
+    start >> [truncate_product, fill_deal]
+    truncate_product >> fill_product
+    [fill_deal, fill_product] >> rebuild_dm >> end
