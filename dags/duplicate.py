@@ -10,24 +10,24 @@ SCHEMA_LOGS = 'logs'
 
 
 def run_log(proc_name, calc_date, hook):
-
     start_ts = datetime.now()
-    log_id = hook.get_first( f"INSERT INTO {SCHEMA_LOGS}.etl_log (dag_id, start_ts, status, message) VALUES (%s, %s, %s, %s) RETURNING id;",parameters=(proc_name, start_ts, 'Running', f'Расчет за дату {calc_date}'))[0]
+    log_id = hook.get_first(f"INSERT INTO {SCHEMA_LOGS}.etl_log (dag_id, start_ts, status, message) VALUES (%s, %s, %s, %s) RETURNING id;", parameters=(proc_name, start_ts, 'Running', f'Расчет за дату {calc_date}'))[0]
 
     try:
-        delete_sql = """
+
+        """delete_sql =
         DO $$
         BEGIN
-            DELETE FROM dm.client
-            WHERE ctid NOT IN (
-                SELECT MIN(ctid)
-                FROM dm.client
-                GROUP BY client_rk, effective_from_date
-            );
-        END $$;
-        """
+        DELETE FROM dm.client
+        WHERE ctid NOT IN (
+        SELECT MIN(ctid)
+        FROM dm.client
+        GROUP BY client_rk, effective_from_date
+        );
+        END $$;"""
 
-        hook.run(delete_sql)
+        call_procedure_sql = "CALL dm.delete_client_duplicates();"
+        hook.run(call_procedure_sql)
 
         hook.run(f"UPDATE {SCHEMA_LOGS}.etl_log SET end_ts = %s, status = %s WHERE id = %s", parameters=(datetime.now(), 'Success', log_id))
 
